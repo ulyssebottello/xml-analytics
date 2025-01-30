@@ -223,7 +223,7 @@ def display_tags_info(tags_info):
         st.write("**Balises mobile:**")
         st.write(", ".join(sorted(tags_info['mobile'])))
 
-def display_sitemap_stats(urls, dates, tags_info=None, title="Statistiques"):
+def display_sitemap_stats(urls, dates, tags_info=None, title="Statistiques", key=None):
     st.header(title)
     
     if urls:
@@ -242,7 +242,7 @@ def display_sitemap_stats(urls, dates, tags_info=None, title="Statistiques"):
         with col4:
             st.metric('Dernière année', stats['year'])
         
-        st.plotly_chart(create_hour_heatmap(dates), use_container_width=True)
+        st.plotly_chart(create_hour_heatmap(dates), use_container_width=True, key=key)
     
     if tags_info:
         display_tags_info(tags_info)
@@ -286,11 +286,11 @@ if xml_url:
                                 all_dates.extend(result['dates'])
                 
                 # Afficher les stats globales
-                display_sitemap_stats(all_urls, all_dates, "Statistiques Globales")
+                display_sitemap_stats(all_urls, all_dates, None, "Statistiques Globales", "global")
                 
                 # Afficher les stats individuelles
                 st.header('Statistiques par Sitemap')
-                for result in results:
+                for i, result in enumerate(results):
                     title = f"Sitemap: {result['url']}"
                     if result['success']:
                         url_count = len(result['urls']) if result['urls'] else 0
@@ -299,7 +299,7 @@ if xml_url:
                         title += " (Failed)"
                     with st.expander(title):
                         if result['success']:
-                            display_sitemap_stats(result['urls'], result['dates'], result['tags_info'])
+                            display_sitemap_stats(result['urls'], result['dates'], result['tags_info'], title, f"sitemap_{i}")
                         else:
                             st.error(f"Erreur: {result['error']}")
                 
@@ -307,7 +307,7 @@ if xml_url:
                 # Traitement d'un sitemap normal
                 unique_urls, last_mod_dates, tags_info = parse_sitemap(xml_content)
                 if unique_urls and last_mod_dates:
-                    display_sitemap_stats(unique_urls, last_mod_dates, tags_info)
+                    display_sitemap_stats(unique_urls, last_mod_dates, tags_info, key="single_sitemap")
                     
                     if st.checkbox('Afficher toutes les URLs'):
                         st.write(list(unique_urls))
