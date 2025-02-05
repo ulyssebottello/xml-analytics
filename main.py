@@ -8,15 +8,70 @@ import pytz
 import plotly.graph_objects as go
 import numpy as np
 import concurrent.futures
+import gzip
+import io
 
 def fetch_xml(url):
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.text
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
+        
+        messages = []  # Pour stocker les messages
+        
+        # Stream la réponse pour vérifier la taille
+        with requests.get(url, headers=headers, timeout=10, stream=True) as response:
+            response.raise_for_status()
+            
+            # Vérifier le type de contenu
+            content_type = response.headers.get('Content-Type', '')
+            if not any(t in content_type.lower() for t in ['xml', 'text', 'application/x-gzip']):
+                raise ValueError(f"Type de contenu non autorisé: {content_type}")
+            
+            # Vérifier la taille du fichier (limite à 10MB)
+            content_length = int(response.headers.get('Content-Length', 0))
+            if content_length > 10 * 1024 * 1024:  # 10MB
+                raise ValueError(f"Fichier trop volumineux: {content_length} bytes")
+            
+            # Lire le contenu avec une limite de taille
+            content = b''
+            chunk_size = 1024  # 1KB
+            total_size = 0
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                total_size += len(chunk)
+                if total_size > 10 * 1024 * 1024:  # 10MB
+                    raise ValueError("Taille limite dépassée pendant le téléchargement")
+                content += chunk
+        
+        # Vérifier si le contenu est en gzip
+        if content.startswith(b'\x1f\x8b'):
+            size_kb = len(content) / 1024
+            messages.append(('info', f"📦 Fichier GZ détecté: {url} ({size_kb:.1f} KB)"))
+            try:
+                # Décompresser avec une limite de taille (100MB)
+                decompressor = gzip.GzipFile(fileobj=io.BytesIO(content))
+                decompressor._max_read_size = 100 * 1024 * 1024  # 100MB
+                content = decompressor.read()
+            except Exception as e:
+                messages.append(('warning', f"Échec de la décompression gzip: {str(e)}"))
+        
+        # Essayer différents encodages
+        for encoding in ['utf-8', 'utf-8-sig', 'latin1', 'iso-8859-1']:
+            try:
+                decoded_content = content.decode(encoding)
+                return decoded_content, messages
+            except UnicodeDecodeError:
+                continue
+        
+        messages.append(('error', "Impossible de décoder le contenu avec les encodages connus"))
+        return None, messages
+            
+    except ValueError as e:
+        return None, [('error', f"Erreur de sécurité: {str(e)}")]
     except Exception as e:
-        st.error(f"Erreur lors de la récupération du XML: {str(e)}")
-        return None
+        return None, [('error', f"Erreur lors de la récupération du XML: {str(e)}")]
 
 def is_sitemap_index(xml_content):
     soup = BeautifulSoup(xml_content, 'xml')
@@ -42,35 +97,51 @@ def parse_sitemap_index(xml_content):
 
 def parse_sitemap(xml_content):
     if not xml_content:
-        return None, None, None
+        return set(), [], None, False
     
+    # Parse with namespace handling
     soup = BeautifulSoup(xml_content, 'xml')
-    urls = soup.find_all('url')
+    # Find urlset with or without namespace
+    urlset = soup.find('urlset') or soup.find('ns:urlset') or soup.find('default:urlset')
+    
+    if urlset:
+        urls = urlset.find_all('url') or urlset.find_all('ns:url') or urlset.find_all('default:url')
+    else:
+        urls = soup.find_all('url') or soup.find_all('ns:url') or soup.find_all('default:url')
     
     unique_urls = set()
     last_mod_dates = []
+    has_time_info = False
     tags_info = defaultdict(set)
     
     for url in urls:
-        loc = url.find('loc')
-        last_mod = url.find('lastmod')
+        # Find loc with or without namespace
+        loc = url.find('loc') or url.find('ns:loc') or url.find('default:loc')
+        last_mod = url.find('lastmod') or url.find('ns:lastmod') or url.find('default:lastmod')
         
         if loc:
-            unique_urls.add(loc.text)
+            unique_urls.add(loc.text.strip())
         
         if last_mod:
             try:
-                last_mod_date = parser.parse(last_mod.text)
+                date_str = last_mod.text.strip()
+                if 'T' in date_str or ' ' in date_str or ':' in date_str:
+                    has_time_info = True
+                
+                last_mod_date = parser.parse(date_str)
                 if last_mod_date.tzinfo is None:
                     last_mod_date = pytz.UTC.localize(last_mod_date)
                 last_mod_dates.append(last_mod_date)
             except:
                 continue
 
-        # Detect standard tags
-        if url.find('changefreq'):
+        # Check for standard tags
+        changefreq = url.find('changefreq') or url.find('ns:changefreq') or url.find('default:changefreq')
+        priority = url.find('priority') or url.find('ns:priority') or url.find('default:priority')
+        
+        if changefreq:
             tags_info['standard'].add('changefreq')
-        if url.find('priority'):
+        if priority:
             tags_info['standard'].add('priority')
 
         # Detect image tags
@@ -100,25 +171,28 @@ def parse_sitemap(xml_content):
         if url.find('mobile:mobile'):
             tags_info['mobile'].add('mobile')
     
-    return unique_urls, last_mod_dates, dict(tags_info)
+    return unique_urls, last_mod_dates, dict(tags_info), has_time_info
 
 def fetch_and_parse_sitemap(sitemap_url):
     try:
-        xml_content = fetch_xml(sitemap_url)
+        xml_content, messages = fetch_xml(sitemap_url)
         if xml_content:
-            urls, dates, tags_info = parse_sitemap(xml_content)
+            urls, dates, tags_info, has_time_info = parse_sitemap(xml_content)
             return {
                 'url': sitemap_url,
                 'urls': urls,
                 'dates': dates,
                 'tags_info': tags_info,
+                'has_time_info': has_time_info,
+                'messages': messages,
                 'success': True
             }
     except Exception as e:
         return {
             'url': sitemap_url,
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'messages': []
         }
 
 def analyze_dates(dates):
@@ -223,7 +297,7 @@ def display_tags_info(tags_info):
         st.write("**Balises mobile:**")
         st.write(", ".join(sorted(tags_info['mobile'])))
 
-def display_sitemap_stats(urls, dates, tags_info=None, title="Statistiques", key=None):
+def display_sitemap_stats(urls, dates, tags_info=None, title="Statistiques", key=None, has_time_info=False):
     st.header(title)
     
     if urls:
@@ -242,7 +316,11 @@ def display_sitemap_stats(urls, dates, tags_info=None, title="Statistiques", key
         with col4:
             st.metric('Dernière année', stats['year'])
         
-        st.plotly_chart(create_hour_heatmap(dates), use_container_width=True, key=key)
+        # Vérifier si nous avons l'information d'heure
+        if has_time_info:
+            st.plotly_chart(create_hour_heatmap(dates), use_container_width=True, key=key)
+        else:
+            st.info("⏰ Les dates de modification ne contiennent pas d'information d'heure - la heatmap horaire n'est pas disponible")
     
     if tags_info:
         display_tags_info(tags_info)
@@ -256,10 +334,18 @@ xml_url = st.text_input('Entrez l\'URL du sitemap XML')
 if xml_url:
     with st.spinner('Analyse en cours...'):
         # Récupération du XML initial
-        xml_content = fetch_xml(xml_url)
+        xml_content, messages = fetch_xml(xml_url)
+        
+        # Afficher les messages du fetch initial
+        for msg_type, msg_text in messages:
+            if msg_type == 'info':
+                st.info(msg_text)
+            elif msg_type == 'warning':
+                st.warning(msg_text)
+            elif msg_type == 'error':
+                st.error(msg_text)
         
         if xml_content:
-            # Vérifier si c'est un sitemap index
             if is_sitemap_index(xml_content):
                 st.info('Sitemap Index détecté')
                 
@@ -270,6 +356,7 @@ if xml_url:
                 # Récupérer tous les sitemaps en parallèle
                 all_urls = set()
                 all_dates = []
+                any_has_time_info = False
                 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                     future_to_url = {executor.submit(fetch_and_parse_sitemap, sitemap['url']): sitemap['url'] 
@@ -284,9 +371,11 @@ if xml_url:
                                 all_urls.update(result['urls'])
                             if result['dates']:
                                 all_dates.extend(result['dates'])
+                            if result.get('has_time_info', False):
+                                any_has_time_info = True
                 
                 # Afficher les stats globales
-                display_sitemap_stats(all_urls, all_dates, None, "Statistiques Globales", "global")
+                display_sitemap_stats(all_urls, all_dates, None, "Statistiques Globales", "global", any_has_time_info)
                 
                 # Afficher les stats individuelles
                 st.header('Statistiques par Sitemap')
@@ -298,18 +387,41 @@ if xml_url:
                     else:
                         title += " (Failed)"
                     with st.expander(title):
+                        # Afficher les messages de ce sitemap
+                        if 'messages' in result:
+                            for msg_type, msg_text in result['messages']:
+                                if msg_type == 'info':
+                                    st.info(msg_text)
+                                elif msg_type == 'warning':
+                                    st.warning(msg_text)
+                                elif msg_type == 'error':
+                                    st.error(msg_text)
+                        
                         if result['success']:
-                            display_sitemap_stats(result['urls'], result['dates'], result['tags_info'], title, f"sitemap_{i}")
+                            display_sitemap_stats(
+                                result['urls'], 
+                                result['dates'], 
+                                result['tags_info'], 
+                                title, 
+                                f"sitemap_{i}",
+                                result.get('has_time_info', False)
+                            )
                         else:
                             st.error(f"Erreur: {result['error']}")
                 
             else:
                 # Traitement d'un sitemap normal
-                unique_urls, last_mod_dates, tags_info = parse_sitemap(xml_content)
-                if unique_urls and last_mod_dates:
-                    display_sitemap_stats(unique_urls, last_mod_dates, tags_info, key="single_sitemap")
+                unique_urls, last_mod_dates, tags_info, has_time_info = parse_sitemap(xml_content)
+                if not unique_urls:
+                    st.error('Aucune URL trouvée dans le sitemap')
+                else:
+                    display_sitemap_stats(
+                        unique_urls, 
+                        last_mod_dates, 
+                        tags_info, 
+                        key="single_sitemap",
+                        has_time_info=has_time_info
+                    )
                     
                     if st.checkbox('Afficher toutes les URLs'):
-                        st.write(list(unique_urls))
-                else:
-                    st.error('Aucune URL ou date de modification trouvée dans le sitemap') 
+                        st.write(list(unique_urls)) 
