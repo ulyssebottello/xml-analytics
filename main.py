@@ -25,15 +25,26 @@ def fetch_xml(url):
         with requests.get(url, headers=headers, timeout=10, stream=True) as response:
             response.raise_for_status()
             
+            # Debug: afficher les headers
+            messages.append(('info', f"Headers reçus: Content-Type='{response.headers.get('Content-Type', 'Non défini')}', Content-Length='{response.headers.get('Content-Length', 'Non défini')}'"))
+            
             # Vérifier le type de contenu
             content_type = response.headers.get('Content-Type', '')
-            if not any(t in content_type.lower() for t in ['xml', 'text', 'application/x-gzip']):
-                raise ValueError(f"Type de contenu non autorisé: {content_type}")
+            # Types de contenu autorisés pour les sitemaps
+            allowed_types = ['xml', 'text', 'application/x-gzip', 'application/xml', 'application/octet-stream']
+            if content_type and not any(t in content_type.lower() for t in allowed_types):
+                messages.append(('warning', f"Type de contenu potentiellement problématique: {content_type}"))
+                # On continue quand même l'analyse au lieu de s'arrêter
             
             # Vérifier la taille du fichier (limite à 10MB)
-            content_length = int(response.headers.get('Content-Length', 0))
-            if content_length > 10 * 1024 * 1024:  # 10MB
-                raise ValueError(f"Fichier trop volumineux: {content_length} bytes")
+            content_length_header = response.headers.get('Content-Length')
+            if content_length_header:
+                try:
+                    content_length = int(content_length_header)
+                    if content_length > 10 * 1024 * 1024:  # 10MB
+                        raise ValueError(f"Fichier trop volumineux: {content_length} bytes")
+                except ValueError:
+                    messages.append(('warning', f"Content-Length invalide: {content_length_header}"))
             
             # Lire le contenu avec une limite de taille
             content = b''
@@ -321,6 +332,8 @@ def display_sitemap_stats(urls, dates, tags_info=None, title="Statistiques", key
             st.plotly_chart(create_hour_heatmap(dates), use_container_width=True, key=key)
         else:
             st.info("⏰ Les dates de modification ne contiennent pas d'information d'heure - la heatmap horaire n'est pas disponible")
+    else:
+        st.info("📅 Aucune balise `<lastmod>` (date de modification) trouvée dans ce sitemap - les statistiques temporelles ne sont pas disponibles")
     
     if tags_info:
         display_tags_info(tags_info)
