@@ -11,6 +11,46 @@ import concurrent.futures
 import gzip
 import io
 
+def process_uploaded_file(uploaded_file):
+    """Process an uploaded XML file (handles gzip and encoding)"""
+    try:
+        messages = []
+        
+        # Read the file content
+        content = uploaded_file.read()
+        
+        # Check file size (limit to 10MB)
+        if len(content) > 10 * 1024 * 1024:
+            return None, [('error', f"Fichier trop volumineux: {len(content)} bytes (max 10MB)")]
+        
+        # Check if the content is gzipped
+        if content.startswith(b'\x1f\x8b'):
+            size_kb = len(content) / 1024
+            messages.append(('info', f"📦 Fichier GZ détecté: {uploaded_file.name} ({size_kb:.1f} KB)"))
+            try:
+                # Decompress with size limit (100MB)
+                decompressor = gzip.GzipFile(fileobj=io.BytesIO(content))
+                decompressor._max_read_size = 100 * 1024 * 1024
+                content = decompressor.read()
+                messages.append(('info', f"✅ Décompression réussie"))
+            except Exception as e:
+                messages.append(('warning', f"Échec de la décompression gzip: {str(e)}"))
+        
+        # Try different encodings
+        for encoding in ['utf-8', 'utf-8-sig', 'latin1', 'iso-8859-1']:
+            try:
+                decoded_content = content.decode(encoding)
+                messages.append(('info', f"📄 Fichier lu avec succès (encodage: {encoding})"))
+                return decoded_content, messages
+            except UnicodeDecodeError:
+                continue
+        
+        messages.append(('error', "Impossible de décoder le contenu avec les encodages connus"))
+        return None, messages
+        
+    except Exception as e:
+        return None, [('error', f"Erreur lors de la lecture du fichier: {str(e)}")]
+
 def fetch_xml(url):
     try:
         headers = {
@@ -341,15 +381,34 @@ def display_sitemap_stats(urls, dates, tags_info=None, title="Statistiques", key
 # Interface Streamlit
 st.title('Analyseur de Sitemap XML')
 
-# Input URL
-xml_url = st.text_input('Entrez l\'URL du sitemap XML')
+# Choose input method
+input_method = st.radio(
+    "Choisissez votre méthode d'analyse:",
+    ["📋 URL", "📁 Fichier Local"],
+    horizontal=True
+)
 
-if xml_url:
+xml_content = None
+messages = []
+
+if input_method == "📋 URL":
+    xml_url = st.text_input('Entrez l\'URL du sitemap XML')
+    if xml_url:
+        with st.spinner('Récupération du sitemap depuis l\'URL...'):
+            xml_content, messages = fetch_xml(xml_url)
+else:  # File upload
+    uploaded_file = st.file_uploader(
+        "Glissez-déposez votre fichier XML ici",
+        type=['xml', 'gz'],
+        help="Formats acceptés: .xml, .xml.gz"
+    )
+    if uploaded_file:
+        with st.spinner('Lecture du fichier...'):
+            xml_content, messages = process_uploaded_file(uploaded_file)
+
+if xml_content:
     with st.spinner('Analyse en cours...'):
-        # Récupération du XML initial
-        xml_content, messages = fetch_xml(xml_url)
-        
-        # Afficher les messages du fetch initial
+        # Afficher les messages
         for msg_type, msg_text in messages:
             if msg_type == 'info':
                 st.info(msg_text)
