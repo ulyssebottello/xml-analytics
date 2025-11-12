@@ -19,9 +19,9 @@ def process_uploaded_file(uploaded_file):
         # Read the file content
         content = uploaded_file.read()
         
-        # Check file size (limit to 10MB)
-        if len(content) > 10 * 1024 * 1024:
-            return None, [('error', f"Fichier trop volumineux: {len(content)} bytes (max 10MB)")]
+        # Check file size (limit to 50MB)
+        if len(content) > 50 * 1024 * 1024:
+            return None, [('error', f"Fichier trop volumineux: {len(content)} bytes (max 50MB)")]
         
         # Check if the content is gzipped
         if content.startswith(b'\x1f\x8b'):
@@ -40,7 +40,11 @@ def process_uploaded_file(uploaded_file):
         for encoding in ['utf-8', 'utf-8-sig', 'latin1', 'iso-8859-1']:
             try:
                 decoded_content = content.decode(encoding)
-                messages.append(('info', f"📄 Fichier lu avec succès (encodage: {encoding})"))
+                size_mb = len(content) / (1024 * 1024)
+                messages.append(('info', f"📄 Fichier lu avec succès (encodage: {encoding}, taille: {size_mb:.2f} MB)"))
+                # Vérifier si le contenu contient des CDATA
+                if 'CDATA' in decoded_content[:5000]:  # Check first 5KB
+                    messages.append(('info', f"📝 Format CDATA détecté - sera géré automatiquement"))
                 return decoded_content, messages
             except UnicodeDecodeError:
                 continue
@@ -76,12 +80,12 @@ def fetch_xml(url):
                 messages.append(('warning', f"Type de contenu potentiellement problématique: {content_type}"))
                 # On continue quand même l'analyse au lieu de s'arrêter
             
-            # Vérifier la taille du fichier (limite à 10MB)
+            # Vérifier la taille du fichier (limite à 50MB)
             content_length_header = response.headers.get('Content-Length')
             if content_length_header:
                 try:
                     content_length = int(content_length_header)
-                    if content_length > 10 * 1024 * 1024:  # 10MB
+                    if content_length > 50 * 1024 * 1024:  # 50MB
                         raise ValueError(f"Fichier trop volumineux: {content_length} bytes")
                 except ValueError:
                     messages.append(('warning', f"Content-Length invalide: {content_length_header}"))
@@ -92,7 +96,7 @@ def fetch_xml(url):
             total_size = 0
             for chunk in response.iter_content(chunk_size=chunk_size):
                 total_size += len(chunk)
-                if total_size > 10 * 1024 * 1024:  # 10MB
+                if total_size > 50 * 1024 * 1024:  # 50MB
                     raise ValueError("Taille limite dépassée pendant le téléchargement")
                 content += chunk
         
@@ -112,6 +116,11 @@ def fetch_xml(url):
         for encoding in ['utf-8', 'utf-8-sig', 'latin1', 'iso-8859-1']:
             try:
                 decoded_content = content.decode(encoding)
+                size_mb = len(content) / (1024 * 1024)
+                messages.append(('info', f"✅ Fichier chargé: {size_mb:.2f} MB"))
+                # Vérifier si le contenu contient des CDATA
+                if 'CDATA' in decoded_content[:5000]:  # Check first 5KB
+                    messages.append(('info', f"📝 Format CDATA détecté - sera géré automatiquement"))
                 return decoded_content, messages
             except UnicodeDecodeError:
                 continue
@@ -171,7 +180,10 @@ def parse_sitemap(xml_content):
         last_mod = url.find('lastmod') or url.find('ns:lastmod') or url.find('default:lastmod')
         
         if loc:
-            unique_urls.add(loc.text.strip())
+            # .text automatically extracts content from CDATA sections (e.g., <![CDATA[url]]>)
+            url_text = loc.text.strip()
+            if url_text:  # Only add non-empty URLs
+                unique_urls.add(url_text)
         
         if last_mod:
             try:
