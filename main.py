@@ -238,6 +238,13 @@ def fetch_and_parse_sitemap(sitemap_url):
                 'messages': messages,
                 'success': True
             }
+        else:
+            return {
+                'url': sitemap_url,
+                'success': False,
+                'error': 'Failed to fetch XML content',
+                'messages': messages
+            }
     except Exception as e:
         return {
             'url': sitemap_url,
