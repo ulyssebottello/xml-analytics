@@ -57,16 +57,39 @@ def process_uploaded_file(uploaded_file):
 
 def fetch_xml(url):
     try:
+        # Extraire le domaine pour le Referer
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Encoding': 'gzip, deflate',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            'Referer': base_url + '/',
         }
         
         messages = []  # Pour stocker les messages
         
+        # Utiliser une session pour gérer les cookies
+        session = requests.Session()
+        
+        # D'abord visiter la page d'accueil pour obtenir les cookies
+        try:
+            session.get(base_url, headers=headers, timeout=5)
+        except:
+            pass  # On continue même si ça échoue
+        
         # Stream la réponse pour vérifier la taille
-        with requests.get(url, headers=headers, timeout=10, stream=True) as response:
+        with session.get(url, headers=headers, timeout=10, stream=True) as response:
             response.raise_for_status()
             
             # Debug: afficher les headers
@@ -425,94 +448,240 @@ else:  # File upload
         with st.spinner('Lecture du fichier...'):
             xml_content, messages = process_uploaded_file(uploaded_file)
 
+# Toujours afficher les messages (même si xml_content est None)
+if messages:
+    for msg_type, msg_text in messages:
+        if msg_type == 'info':
+            st.info(msg_text)
+        elif msg_type == 'warning':
+            st.warning(msg_text)
+        elif msg_type == 'error':
+            st.error(msg_text)
+
 if xml_content:
     with st.spinner('Analyse en cours...'):
-        # Afficher les messages
-        for msg_type, msg_text in messages:
-            if msg_type == 'info':
-                st.info(msg_text)
-            elif msg_type == 'warning':
-                st.warning(msg_text)
-            elif msg_type == 'error':
-                st.error(msg_text)
-        
-        if xml_content:
-            if is_sitemap_index(xml_content):
-                st.info('Sitemap Index détecté')
+        if is_sitemap_index(xml_content):
+            st.info('Sitemap Index détecté')
+            
+            # Parser le sitemap index
+            sitemaps = parse_sitemap_index(xml_content)
+            st.metric('Nombre de sitemaps', len(sitemaps))
+            
+            # Récupérer tous les sitemaps en parallèle
+            all_urls = set()
+            all_dates = []
+            any_has_time_info = False
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_url = {executor.submit(fetch_and_parse_sitemap, sitemap['url']): sitemap['url'] 
+                               for sitemap in sitemaps}
                 
-                # Parser le sitemap index
-                sitemaps = parse_sitemap_index(xml_content)
-                st.metric('Nombre de sitemaps', len(sitemaps))
-                
-                # Récupérer tous les sitemaps en parallèle
-                all_urls = set()
-                all_dates = []
-                any_has_time_info = False
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    future_to_url = {executor.submit(fetch_and_parse_sitemap, sitemap['url']): sitemap['url'] 
-                                   for sitemap in sitemaps}
-                    
-                    results = []
-                    for future in concurrent.futures.as_completed(future_to_url):
-                        result = future.result()
-                        results.append(result)
-                        if result['success']:
-                            if result['urls']:
-                                all_urls.update(result['urls'])
-                            if result['dates']:
-                                all_dates.extend(result['dates'])
-                            if result.get('has_time_info', False):
-                                any_has_time_info = True
-                
-                # Afficher les stats globales
-                display_sitemap_stats(all_urls, all_dates, None, "Statistiques Globales", "global", any_has_time_info)
-                
-                # Afficher les stats individuelles
-                st.header('Statistiques par Sitemap')
-                for i, result in enumerate(results):
-                    title = f"Sitemap: {result['url']}"
+                results = []
+                for future in concurrent.futures.as_completed(future_to_url):
+                    result = future.result()
+                    results.append(result)
                     if result['success']:
-                        url_count = len(result['urls']) if result['urls'] else 0
-                        title += f" ({url_count} URLs)"
-                    else:
-                        title += " (Failed)"
-                    with st.expander(title):
-                        # Afficher les messages de ce sitemap
-                        if 'messages' in result:
-                            for msg_type, msg_text in result['messages']:
-                                if msg_type == 'info':
-                                    st.info(msg_text)
-                                elif msg_type == 'warning':
-                                    st.warning(msg_text)
-                                elif msg_type == 'error':
-                                    st.error(msg_text)
-                        
-                        if result['success']:
-                            display_sitemap_stats(
-                                result['urls'], 
-                                result['dates'], 
-                                result['tags_info'], 
-                                title, 
-                                f"sitemap_{i}",
-                                result.get('has_time_info', False)
-                            )
-                        else:
-                            st.error(f"Erreur: {result['error']}")
-                
-            else:
-                # Traitement d'un sitemap normal
-                unique_urls, last_mod_dates, tags_info, has_time_info = parse_sitemap(xml_content)
-                if not unique_urls:
-                    st.error('Aucune URL trouvée dans le sitemap')
+                        if result['urls']:
+                            all_urls.update(result['urls'])
+                        if result['dates']:
+                            all_dates.extend(result['dates'])
+                        if result.get('has_time_info', False):
+                            any_has_time_info = True
+            
+            # Afficher les stats globales
+            display_sitemap_stats(all_urls, all_dates, None, "Statistiques Globales", "global", any_has_time_info)
+            
+            # Afficher les stats individuelles
+            st.header('Statistiques par Sitemap')
+            for i, result in enumerate(results):
+                title = f"Sitemap: {result['url']}"
+                if result['success']:
+                    url_count = len(result['urls']) if result['urls'] else 0
+                    title += f" ({url_count} URLs)"
                 else:
-                    display_sitemap_stats(
-                        unique_urls, 
-                        last_mod_dates, 
-                        tags_info, 
-                        key="single_sitemap",
-                        has_time_info=has_time_info
-                    )
+                    title += " (Failed)"
+                with st.expander(title):
+                    # Afficher les messages de ce sitemap
+                    if 'messages' in result:
+                        for msg_type, msg_text in result['messages']:
+                            if msg_type == 'info':
+                                st.info(msg_text)
+                            elif msg_type == 'warning':
+                                st.warning(msg_text)
+                            elif msg_type == 'error':
+                                st.error(msg_text)
                     
-                    if st.checkbox('Afficher toutes les URLs'):
-                        st.write(list(unique_urls)) 
+                    if result['success']:
+                        display_sitemap_stats(
+                            result['urls'], 
+                            result['dates'], 
+                            result['tags_info'], 
+                            title, 
+                            f"sitemap_{i}",
+                            result.get('has_time_info', False)
+                        )
+                    else:
+                        st.error(f"Erreur: {result['error']}")
+        
+        else:
+            # Traitement d'un sitemap normal
+            unique_urls, last_mod_dates, tags_info, has_time_info = parse_sitemap(xml_content)
+            if not unique_urls:
+                st.error('Aucune URL trouvée dans le sitemap')
+            else:
+                display_sitemap_stats(
+                    unique_urls, 
+                    last_mod_dates, 
+                    tags_info, 
+                    key="single_sitemap",
+                    has_time_info=has_time_info
+                )
+                
+                if st.checkbox('Afficher toutes les URLs'):
+                    st.write(list(unique_urls))
+
+# ===========================================
+# SIMULATEUR DE COÛTS TOLK.AI
+# ===========================================
+st.divider()
+st.header("💰 Simulateur de Coûts Tolk.ai")
+
+# Récupérer les valeurs par défaut depuis l'analyse du sitemap
+default_urls = 3800
+default_refresh_month = 0
+default_refresh_annual = 0
+
+if xml_content:
+    if is_sitemap_index(xml_content):
+        if 'all_urls' in dir() and all_urls:
+            default_urls = len(all_urls)
+        if 'all_dates' in dir() and all_dates:
+            stats = analyze_dates(all_dates)
+            default_refresh_month = stats.get('month', 0)
+            default_refresh_annual = stats.get('year', 0)
+    else:
+        if 'unique_urls' in dir() and unique_urls:
+            default_urls = len(unique_urls)
+        if 'last_mod_dates' in dir() and last_mod_dates:
+            stats = analyze_dates(last_mod_dates)
+            default_refresh_month = stats.get('month', 0)
+            default_refresh_annual = stats.get('year', 0)
+
+# Afficher un message si des données ont été détectées
+if default_refresh_month > 0 or default_refresh_annual > 0:
+    st.info(f"📊 Valeurs pré-remplies depuis l'analyse du sitemap: {default_refresh_month:,} URLs modifiées le dernier mois, {default_refresh_annual:,} la dernière année")
+
+with st.expander("⚙️ Paramètres du simulateur", expanded=True):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Import XML")
+        total_urls = st.number_input(
+            "Nombre total d'URLs",
+            min_value=0,
+            value=default_urls,
+            step=100,
+            help="Nombre total d'URLs à importer dans Tolk.ai"
+        )
+    
+    with col2:
+        st.subheader("Refresh")
+        refresh_urls_month = st.number_input(
+            "Refresh d'URLs par mois",
+            min_value=0,
+            value=default_refresh_month,
+            step=100,
+            help="Nombre d'URLs rafraîchies chaque mois (basé sur les modifications du dernier mois)"
+        )
+        refresh_urls_annual = st.number_input(
+            "Refresh d'URLs annuel",
+            min_value=0,
+            value=default_refresh_annual,
+            step=100,
+            help="Nombre total d'URLs rafraîchies par an (basé sur les modifications de la dernière année)"
+        )
+    
+    st.subheader("Marge")
+    col_margin1, col_margin2 = st.columns([1, 2])
+    with col_margin1:
+        margin_percent = st.number_input(
+            "Marge (%)",
+            min_value=0,
+            max_value=200,
+            value=30,
+            step=5,
+            help="Pourcentage de marge à appliquer (30% = multiplicateur 1.3)"
+        )
+    margin_multiplier = 1 + (margin_percent / 100)
+    with col_margin2:
+        st.write("")
+        st.write("")
+        st.caption(f"Multiplicateur: **×{margin_multiplier:.2f}**")
+
+# ===== CALCULS =====
+# Coûts Import XML
+embedding_cost_import = total_urls * 0.002
+storage_cost_import = (total_urls * 12) * 0.0005
+
+# Coûts Refresh - prendre le MAX entre mensuel×12 et annuel
+refresh_monthly_annualized = refresh_urls_month * 12
+refresh_effective = max(refresh_monthly_annualized, refresh_urls_annual)
+embedding_cost_refresh = refresh_effective * 0.002
+
+# Total
+total_cost = (embedding_cost_import / 12) + storage_cost_import + embedding_cost_refresh
+sale_price = total_cost * margin_multiplier
+
+# ===== AFFICHAGE DES RÉSULTATS =====
+st.subheader("📊 Détail des Coûts")
+
+col_import, col_refresh = st.columns(2)
+
+with col_import:
+    st.markdown("**🔵 Coûts Import XML**")
+    st.write(f"URLs à importer: **{total_urls:,}**")
+    st.write(f"Coût Embedding: {total_urls:,} × 0,002 = **{embedding_cost_import:.2f} €**")
+    st.write(f"Coût Stockage: ({total_urls:,} × 12) × 0,0005 = **{storage_cost_import:.2f} €**")
+
+with col_refresh:
+    st.markdown("**🔄 Coûts Refresh**")
+    st.write(f"Mensuel × 12: {refresh_urls_month:,} × 12 = **{refresh_monthly_annualized:,}**")
+    st.write(f"Annuel: **{refresh_urls_annual:,}**")
+    if refresh_monthly_annualized >= refresh_urls_annual:
+        st.write(f"→ Valeur retenue: **{refresh_effective:,}** (mensuel × 12)")
+    else:
+        st.write(f"→ Valeur retenue: **{refresh_effective:,}** (annuel)")
+    st.write(f"Coût Embedding Refresh: {refresh_effective:,} × 0,002 = **{embedding_cost_refresh:.2f} €**")
+
+st.divider()
+
+# Résumé final
+st.subheader("💵 Résumé")
+
+formula_col1, formula_col2 = st.columns([2, 1])
+
+with formula_col1:
+    st.markdown("**Formule du coût total:**")
+    st.code(f"({embedding_cost_import:.2f} / 12) + {storage_cost_import:.2f} + {embedding_cost_refresh:.2f} = {total_cost:.2f} €")
+    st.caption("(Embedding Import ÷ 12) + Stockage Import + Embedding Refresh")
+
+with formula_col2:
+    pass
+
+# Métriques finales
+result_col1, result_col2 = st.columns(2)
+
+with result_col1:
+    st.metric(
+        label="Coût Tolk.ai Total",
+        value=f"{total_cost:.2f} €",
+        help="Coût total avant marge"
+    )
+
+with result_col2:
+    st.metric(
+        label=f"Prix de Vente (+{margin_percent}%)",
+        value=f"{sale_price:.2f} €",
+        delta=f"+{sale_price - total_cost:.2f} € de marge",
+        help=f"Prix de vente avec marge de {margin_percent}%"
+    )
