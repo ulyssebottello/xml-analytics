@@ -10,6 +10,230 @@ import numpy as np
 import concurrent.futures
 import gzip
 import io
+import re
+from urllib.parse import urlparse
+
+# ===========================================
+# ANALYSE ROBOTS.TXT
+# ===========================================
+
+def get_robots_url(sitemap_url):
+    """Extrait l'URL du robots.txt à partir d'une URL de sitemap"""
+    parsed = urlparse(sitemap_url)
+    return f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+
+def fetch_robots_txt(url):
+    """Récupère le contenu du robots.txt"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/plain,text/html,*/*',
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.text, None
+    except requests.exceptions.HTTPError as e:
+        return None, f"Erreur HTTP: {e}"
+    except requests.exceptions.Timeout:
+        return None, "Timeout lors de la récupération"
+    except Exception as e:
+        return None, f"Erreur: {str(e)}"
+
+def analyze_robots_txt(robots_content, sitemap_url=None):
+    """Analyse le contenu du robots.txt et retourne les informations pertinentes"""
+    analysis = {
+        'disallow_rules': [],
+        'allow_rules': [],
+        'sitemaps': [],
+        'crawl_delay': None,
+        'waf_detected': [],
+        'potential_issues': [],
+        'user_agents': []
+    }
+    
+    if not robots_content:
+        return analysis
+    
+    lines = robots_content.strip().split('\n')
+    current_user_agent = '*'
+    
+    # Patterns de WAF/protection connus
+    waf_patterns = {
+        'Incapsula': r'incapsula|imperva',
+        'Cloudflare': r'cloudflare|cf-ray',
+        'Akamai': r'akamai',
+        'Sucuri': r'sucuri',
+        'AWS WAF': r'aws.*waf|x-amz',
+        'Fastly': r'fastly',
+        'StackPath': r'stackpath',
+    }
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Ignorer les commentaires vides
+        if not line:
+            continue
+            
+        # Détecter les commentaires (peuvent contenir des infos utiles)
+        if line.startswith('#'):
+            # Vérifier si le commentaire mentionne un WAF
+            for waf_name, pattern in waf_patterns.items():
+                if re.search(pattern, line, re.IGNORECASE):
+                    if waf_name not in analysis['waf_detected']:
+                        analysis['waf_detected'].append(waf_name)
+            continue
+        
+        # Parser les directives
+        if ':' in line:
+            directive, value = line.split(':', 1)
+            directive = directive.strip().lower()
+            value = value.strip()
+            
+            if directive == 'user-agent':
+                current_user_agent = value
+                if value not in analysis['user_agents']:
+                    analysis['user_agents'].append(value)
+                    
+            elif directive == 'disallow':
+                if value:  # Ignorer les Disallow vides
+                    analysis['disallow_rules'].append({
+                        'user_agent': current_user_agent,
+                        'path': value
+                    })
+                    # Vérifier les patterns de WAF dans les règles Disallow
+                    for waf_name, pattern in waf_patterns.items():
+                        if re.search(pattern, value, re.IGNORECASE):
+                            if waf_name not in analysis['waf_detected']:
+                                analysis['waf_detected'].append(waf_name)
+                                
+            elif directive == 'allow':
+                if value:
+                    analysis['allow_rules'].append({
+                        'user_agent': current_user_agent,
+                        'path': value
+                    })
+                    
+            elif directive == 'sitemap':
+                analysis['sitemaps'].append(value)
+                
+            elif directive == 'crawl-delay':
+                try:
+                    analysis['crawl_delay'] = float(value)
+                except:
+                    pass
+    
+    # Analyser les problèmes potentiels
+    for rule in analysis['disallow_rules']:
+        path = rule['path']
+        ua = rule['user_agent']
+        
+        # Vérifier si tout le site est bloqué
+        if path == '/' and ua == '*':
+            analysis['potential_issues'].append({
+                'severity': 'critical',
+                'message': "⛔ Le site bloque TOUS les robots (Disallow: /)"
+            })
+        
+        # Vérifier si les sitemaps sont bloqués
+        if 'sitemap' in path.lower():
+            analysis['potential_issues'].append({
+                'severity': 'warning',
+                'message': f"⚠️ Les sitemaps pourraient être bloqués: {path}"
+            })
+        
+        # Vérifier si l'API est bloquée
+        if '/api' in path.lower():
+            analysis['potential_issues'].append({
+                'severity': 'info',
+                'message': f"ℹ️ L'API est bloquée: {path}"
+            })
+    
+    # Vérifier si le sitemap demandé est dans la liste
+    if sitemap_url and analysis['sitemaps']:
+        if sitemap_url in analysis['sitemaps']:
+            analysis['potential_issues'].append({
+                'severity': 'success',
+                'message': f"✅ Le sitemap demandé est déclaré dans robots.txt"
+            })
+        else:
+            # Vérifier si c'est un sitemap du même domaine
+            parsed_sitemap = urlparse(sitemap_url)
+            sitemap_in_same_domain = any(
+                urlparse(s).netloc == parsed_sitemap.netloc 
+                for s in analysis['sitemaps']
+            )
+            if sitemap_in_same_domain:
+                analysis['potential_issues'].append({
+                    'severity': 'info',
+                    'message': f"ℹ️ D'autres sitemaps sont déclarés pour ce domaine"
+                })
+    
+    # Si WAF détecté, ajouter un avertissement
+    if analysis['waf_detected']:
+        waf_list = ', '.join(analysis['waf_detected'])
+        analysis['potential_issues'].append({
+            'severity': 'warning',
+            'message': f"🛡️ Protection WAF détectée: {waf_list} - Des blocages sont possibles"
+        })
+    
+    return analysis
+
+def display_robots_analysis(analysis, robots_url):
+    """Affiche l'analyse du robots.txt dans l'interface Streamlit"""
+    
+    with st.expander("🤖 Analyse du robots.txt", expanded=False):
+        st.caption(f"Source: {robots_url}")
+        
+        # Afficher les problèmes potentiels en premier
+        if analysis['potential_issues']:
+            st.subheader("Diagnostic")
+            for issue in analysis['potential_issues']:
+                if issue['severity'] == 'critical':
+                    st.error(issue['message'])
+                elif issue['severity'] == 'warning':
+                    st.warning(issue['message'])
+                elif issue['severity'] == 'success':
+                    st.success(issue['message'])
+                else:
+                    st.info(issue['message'])
+        
+        # Statistiques rapides
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Règles Disallow", len(analysis['disallow_rules']))
+        with col2:
+            st.metric("Sitemaps déclarés", len(analysis['sitemaps']))
+        with col3:
+            if analysis['crawl_delay']:
+                st.metric("Crawl-delay", f"{analysis['crawl_delay']}s")
+            else:
+                st.metric("Crawl-delay", "Non défini")
+        
+        # Détails des sitemaps déclarés
+        if analysis['sitemaps']:
+            st.subheader("📍 Sitemaps déclarés")
+            for sitemap in analysis['sitemaps']:
+                st.code(sitemap, language=None)
+        
+        # Règles Disallow importantes
+        if analysis['disallow_rules']:
+            st.subheader("🚫 Règles Disallow")
+            # Grouper par user-agent
+            rules_by_ua = {}
+            for rule in analysis['disallow_rules']:
+                ua = rule['user_agent']
+                if ua not in rules_by_ua:
+                    rules_by_ua[ua] = []
+                rules_by_ua[ua].append(rule['path'])
+            
+            for ua, paths in rules_by_ua.items():
+                with st.expander(f"User-Agent: {ua} ({len(paths)} règles)"):
+                    for path in paths[:20]:  # Limiter à 20 pour la lisibilité
+                        st.text(f"  Disallow: {path}")
+                    if len(paths) > 20:
+                        st.caption(f"... et {len(paths) - 20} autres règles")
+
 
 def process_uploaded_file(uploaded_file):
     """Process an uploaded XML file (handles gzip and encoding)"""
@@ -436,6 +660,21 @@ messages = []
 if input_method == "📋 URL":
     xml_url = st.text_input('Entrez l\'URL du sitemap XML')
     if xml_url:
+        # Analyse du robots.txt avant de récupérer le sitemap
+        robots_url = get_robots_url(xml_url)
+        
+        with st.spinner('Analyse du robots.txt...'):
+            robots_content, robots_error = fetch_robots_txt(robots_url)
+            
+            if robots_content:
+                robots_analysis = analyze_robots_txt(robots_content, xml_url)
+                display_robots_analysis(robots_analysis, robots_url)
+            elif robots_error:
+                st.warning(f"Impossible de récupérer le robots.txt: {robots_error}")
+            else:
+                st.info("Aucun robots.txt trouvé pour ce domaine")
+        
+        # Récupération du sitemap
         with st.spinner('Récupération du sitemap depuis l\'URL...'):
             xml_content, messages = fetch_xml(xml_url)
 else:  # File upload
