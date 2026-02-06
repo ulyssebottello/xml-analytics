@@ -228,11 +228,11 @@ def display_robots_analysis(analysis, robots_url):
                 rules_by_ua[ua].append(rule['path'])
             
             for ua, paths in rules_by_ua.items():
-                with st.expander(f"User-Agent: {ua} ({len(paths)} règles)"):
-                    for path in paths[:20]:  # Limiter à 20 pour la lisibilité
-                        st.text(f"  Disallow: {path}")
-                    if len(paths) > 20:
-                        st.caption(f"... et {len(paths) - 20} autres règles")
+                st.markdown(f"**User-Agent: `{ua}`** ({len(paths)} règles)")
+                rules_text = "\n".join(f"  Disallow: {path}" for path in paths[:20])
+                if len(paths) > 20:
+                    rules_text += f"\n  ... et {len(paths) - 20} autres règles"
+                st.code(rules_text, language=None)
 
 
 def process_uploaded_file(uploaded_file):
@@ -395,8 +395,8 @@ def parse_sitemap_index(xml_content):
         
         if loc:
             sitemap_info = {
-                'url': loc.text,
-                'lastmod': parser.parse(last_mod.text) if last_mod else None
+                'url': loc.text.strip(),
+                'lastmod': parser.parse(last_mod.text.strip()) if last_mod and last_mod.text else None
             }
             sitemap_data.append(sitemap_info)
     
