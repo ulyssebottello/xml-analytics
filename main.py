@@ -728,12 +728,20 @@ if messages:
 
 if xml_content:
     with st.spinner('Analyse en cours...'):
-        # Debug: afficher un aperçu du contenu XML
+        # Debug: vérifier le contenu
+        st.write(f"**Debug:** Taille du contenu: {len(xml_content)} caractères")
         xml_preview = xml_content[:500].strip()
-        if 'sitemapindex' in xml_content.lower():
-            st.write("🔍 **Debug:** Balise 'sitemapindex' détectée dans le contenu")
+        st.code(xml_preview, language='xml')
         
-        if is_sitemap_index(xml_content):
+        has_sitemapindex = 'sitemapindex' in xml_content.lower()
+        has_urlset = 'urlset' in xml_content.lower()
+        is_index = is_sitemap_index(xml_content)
+        
+        st.write(f"**Debug:** 'sitemapindex' dans contenu: {has_sitemapindex}")
+        st.write(f"**Debug:** 'urlset' dans contenu: {has_urlset}")
+        st.write(f"**Debug:** is_sitemap_index() retourne: {is_index}")
+        
+        if is_index:
             st.success('🗂️ **Sitemap Index détecté** - Ce fichier est un index pointant vers plusieurs sitemaps')
             
             # Parser le sitemap index
