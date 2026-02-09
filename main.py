@@ -700,25 +700,43 @@ if messages:
 if xml_content:
     with st.spinner('Analyse en cours...'):
         if is_sitemap_index(xml_content):
-            st.info('Sitemap Index détecté')
+            st.success('🗂️ **Sitemap Index détecté** - Ce fichier est un index pointant vers plusieurs sitemaps')
             
             # Parser le sitemap index
             sitemaps = parse_sitemap_index(xml_content)
-            st.metric('Nombre de sitemaps', len(sitemaps))
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric('Nombre de sitemaps enfants', len(sitemaps))
+            with col2:
+                st.metric('Type de fichier', 'Sitemap Index')
+            
+            st.info('📥 Récupération et analyse des sitemaps enfants en cours...')
             
             # Récupérer tous les sitemaps en parallèle
             all_urls = set()
             all_dates = []
             any_has_time_info = False
             
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 future_to_url = {executor.submit(fetch_and_parse_sitemap, sitemap['url']): sitemap['url'] 
                                for sitemap in sitemaps}
                 
                 results = []
+                completed = 0
+                total = len(sitemaps)
+                
                 for future in concurrent.futures.as_completed(future_to_url):
                     result = future.result()
                     results.append(result)
+                    completed += 1
+                    
+                    progress_bar.progress(completed / total)
+                    status_text.text(f'Analysé: {completed}/{total} sitemaps')
+                    
                     if result['success']:
                         if result['urls']:
                             all_urls.update(result['urls'])
@@ -727,18 +745,36 @@ if xml_content:
                         if result.get('has_time_info', False):
                             any_has_time_info = True
             
+            progress_bar.empty()
+            status_text.empty()
+            
+            st.success(f'✅ Analyse terminée: {len(all_urls):,} URLs uniques trouvées dans {len(sitemaps)} sitemaps')
+            
             # Afficher les stats globales
             display_sitemap_stats(all_urls, all_dates, None, "Statistiques Globales", "global", any_has_time_info)
             
             # Afficher les stats individuelles
-            st.header('Statistiques par Sitemap')
-            for i, result in enumerate(results):
-                title = f"Sitemap: {result['url']}"
+            st.header('📊 Statistiques Détaillées par Sitemap')
+            
+            # Trier les résultats par nombre d'URLs (décroissant)
+            results_sorted = sorted(results, key=lambda x: len(x.get('urls', [])) if x.get('success') else 0, reverse=True)
+            
+            for i, result in enumerate(results_sorted):
                 if result['success']:
                     url_count = len(result['urls']) if result['urls'] else 0
-                    title += f" ({url_count} URLs)"
+                    # Emoji selon le nombre d'URLs
+                    if url_count > 1000:
+                        emoji = "🟢"
+                    elif url_count > 100:
+                        emoji = "🟡"
+                    elif url_count > 0:
+                        emoji = "🟠"
+                    else:
+                        emoji = "⚪"
+                    title = f"{emoji} {result['url']} ({url_count:,} URLs)"
                 else:
-                    title += " (Failed)"
+                    title = f"🔴 {result['url']} (Échec)"
+                    
                 with st.expander(title):
                     # Afficher les messages de ce sitemap
                     if 'messages' in result:
@@ -755,23 +791,29 @@ if xml_content:
                             result['urls'], 
                             result['dates'], 
                             result['tags_info'], 
-                            title, 
+                            f"Statistiques: {result['url'].split('/')[-1]}", 
                             f"sitemap_{i}",
                             result.get('has_time_info', False)
                         )
                     else:
-                        st.error(f"Erreur: {result['error']}")
+                        st.error(f"❌ Erreur lors de la récupération: {result.get('error', 'Erreur inconnue')}")
         
         else:
             # Traitement d'un sitemap normal
+            st.success('📄 **Sitemap Standard détecté** - Ce fichier contient directement des URLs')
+            
             unique_urls, last_mod_dates, tags_info, has_time_info = parse_sitemap(xml_content)
             if not unique_urls:
-                st.error('Aucune URL trouvée dans le sitemap')
+                st.error('⚠️ Aucune URL trouvée dans le sitemap')
+                st.info("💡 Ce sitemap ne contient aucune balise `<url>`. Vérifiez que le fichier est bien formaté.")
             else:
+                st.success(f'✅ {len(unique_urls):,} URLs trouvées dans ce sitemap')
+                
                 display_sitemap_stats(
                     unique_urls, 
                     last_mod_dates, 
                     tags_info, 
+                    "Statistiques",
                     key="single_sitemap",
                     has_time_info=has_time_info
                 )
