@@ -252,13 +252,12 @@ def process_uploaded_file(uploaded_file):
             size_kb = len(content) / 1024
             messages.append(('info', f"📦 Fichier GZ détecté: {uploaded_file.name} ({size_kb:.1f} KB)"))
             try:
-                # Decompress with size limit (100MB)
-                decompressor = gzip.GzipFile(fileobj=io.BytesIO(content))
-                decompressor._max_read_size = 100 * 1024 * 1024
-                content = decompressor.read()
+                # Decompress with gzip.decompress (plus fiable)
+                content = gzip.decompress(content)
                 messages.append(('info', f"✅ Décompression réussie"))
             except Exception as e:
-                messages.append(('warning', f"Échec de la décompression gzip: {str(e)}"))
+                messages.append(('error', f"❌ Échec de la décompression gzip: {str(e)}"))
+                return None, messages
         
         # Try different encodings
         for encoding in ['utf-8', 'utf-8-sig', 'latin1', 'iso-8859-1']:
@@ -347,24 +346,24 @@ def fetch_xml(url):
                     raise ValueError("Taille limite dépassée pendant le téléchargement")
                 content += chunk
         
-        # Vérifier si le contenu est en gzip
+        # Vérifier si le contenu est en gzip AVANT de décoder
         if content.startswith(b'\x1f\x8b'):
             size_kb = len(content) / 1024
             messages.append(('info', f"📦 Fichier GZ détecté: {url} ({size_kb:.1f} KB)"))
             try:
                 # Décompresser avec une limite de taille (100MB)
-                decompressor = gzip.GzipFile(fileobj=io.BytesIO(content))
-                decompressor._max_read_size = 100 * 1024 * 1024  # 100MB
-                content = decompressor.read()
+                content = gzip.decompress(content)
+                messages.append(('info', f"✅ Décompression réussie"))
             except Exception as e:
-                messages.append(('warning', f"Échec de la décompression gzip: {str(e)}"))
+                messages.append(('error', f"❌ Échec de la décompression gzip: {str(e)}"))
+                return None, messages
         
-        # Essayer différents encodages
+        # Essayer différents encodages sur le contenu décompressé
         for encoding in ['utf-8', 'utf-8-sig', 'latin1', 'iso-8859-1']:
             try:
                 decoded_content = content.decode(encoding)
                 size_mb = len(content) / (1024 * 1024)
-                messages.append(('info', f"✅ Fichier chargé: {size_mb:.2f} MB"))
+                messages.append(('info', f"✅ Fichier chargé: {size_mb:.2f} MB (encodage: {encoding})"))
                 # Vérifier si le contenu contient des CDATA
                 if 'CDATA' in decoded_content[:5000]:  # Check first 5KB
                     messages.append(('info', f"📝 Format CDATA détecté - sera géré automatiquement"))
@@ -728,20 +727,7 @@ if messages:
 
 if xml_content:
     with st.spinner('Analyse en cours...'):
-        # Debug: vérifier le contenu
-        st.write(f"**Debug:** Taille du contenu: {len(xml_content)} caractères")
-        xml_preview = xml_content[:500].strip()
-        st.code(xml_preview, language='xml')
-        
-        has_sitemapindex = 'sitemapindex' in xml_content.lower()
-        has_urlset = 'urlset' in xml_content.lower()
-        is_index = is_sitemap_index(xml_content)
-        
-        st.write(f"**Debug:** 'sitemapindex' dans contenu: {has_sitemapindex}")
-        st.write(f"**Debug:** 'urlset' dans contenu: {has_urlset}")
-        st.write(f"**Debug:** is_sitemap_index() retourne: {is_index}")
-        
-        if is_index:
+        if is_sitemap_index(xml_content):
             st.success('🗂️ **Sitemap Index détecté** - Ce fichier est un index pointant vers plusieurs sitemaps')
             
             # Parser le sitemap index
