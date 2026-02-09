@@ -13,6 +13,13 @@ import io
 import re
 from urllib.parse import urlparse
 
+# Brotli support (optionnel mais recommandé)
+try:
+    import brotli
+    BROTLI_AVAILABLE = True
+except ImportError:
+    BROTLI_AVAILABLE = False
+
 # ===========================================
 # ANALYSE ROBOTS.TXT
 # ===========================================
@@ -347,21 +354,48 @@ def fetch_xml(url):
                 content += chunk
         
         # Debug: afficher les premiers bytes
+        content_encoding = response.headers.get('Content-Encoding', '').lower().strip()
         messages.append(('info', f"🔍 Premiers bytes: {content[:20]}"))
-        messages.append(('info', f"🔍 Content-Encoding header: {response.headers.get('Content-Encoding', 'Non défini')}"))
+        messages.append(('info', f"🔍 Content-Encoding header: {content_encoding or 'Non défini'}"))
         
-        # Vérifier si le contenu est en gzip AVANT de décoder
-        if content.startswith(b'\x1f\x8b'):
+        # Décompression selon le Content-Encoding ou les magic bytes
+        # 1) Brotli (Content-Encoding: br)
+        if content_encoding == 'br':
+            size_kb = len(content) / 1024
+            messages.append(('info', f"📦 Contenu Brotli détecté (Content-Encoding: br, {size_kb:.1f} KB)"))
+            if BROTLI_AVAILABLE:
+                try:
+                    decompressed = brotli.decompress(content)
+                    messages.append(('info', f"✅ Décompression Brotli réussie: {len(decompressed)} bytes"))
+                    content = decompressed
+                except Exception as e:
+                    messages.append(('error', f"❌ Échec de la décompression Brotli: {str(e)}"))
+                    return None, messages
+            else:
+                messages.append(('error', "❌ Contenu Brotli reçu mais le module 'brotli' n'est pas installé. Installez-le avec: pip install brotli"))
+                return None, messages
+        # 2) Gzip (magic bytes \x1f\x8b ou Content-Encoding: gzip)
+        elif content.startswith(b'\x1f\x8b') or content_encoding == 'gzip':
             size_kb = len(content) / 1024
             messages.append(('info', f"📦 Fichier GZ détecté: {url} ({size_kb:.1f} KB)"))
             try:
-                # Décompresser avec une limite de taille (100MB)
                 decompressed = gzip.decompress(content)
-                messages.append(('info', f"✅ Décompression réussie: {len(decompressed)} bytes décompressés"))
-                messages.append(('info', f"🔍 Premiers caractères décompressés: {decompressed[:200]}"))
+                messages.append(('info', f"✅ Décompression gzip réussie: {len(decompressed)} bytes"))
                 content = decompressed
             except Exception as e:
                 messages.append(('error', f"❌ Échec de la décompression gzip: {str(e)}"))
+                return None, messages
+        # 3) Deflate (Content-Encoding: deflate)
+        elif content_encoding == 'deflate':
+            import zlib
+            size_kb = len(content) / 1024
+            messages.append(('info', f"📦 Contenu Deflate détecté ({size_kb:.1f} KB)"))
+            try:
+                decompressed = zlib.decompress(content, -zlib.MAX_WBITS)
+                messages.append(('info', f"✅ Décompression Deflate réussie: {len(decompressed)} bytes"))
+                content = decompressed
+            except Exception as e:
+                messages.append(('error', f"❌ Échec de la décompression Deflate: {str(e)}"))
                 return None, messages
         else:
             messages.append(('info', f"📄 Contenu non compressé détecté"))

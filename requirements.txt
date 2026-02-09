@@ -5,4 +5,5 @@ beautifulsoup4==4.12.2
 lxml==5.1.0
 pytz==2024.1
 plotly==5.20.0
-numpy==1.26.4 
+numpy==1.26.4
+brotli==1.1.0
