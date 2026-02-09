@@ -346,17 +346,25 @@ def fetch_xml(url):
                     raise ValueError("Taille limite dépassée pendant le téléchargement")
                 content += chunk
         
+        # Debug: afficher les premiers bytes
+        messages.append(('info', f"🔍 Premiers bytes: {content[:20]}"))
+        messages.append(('info', f"🔍 Content-Encoding header: {response.headers.get('Content-Encoding', 'Non défini')}"))
+        
         # Vérifier si le contenu est en gzip AVANT de décoder
         if content.startswith(b'\x1f\x8b'):
             size_kb = len(content) / 1024
             messages.append(('info', f"📦 Fichier GZ détecté: {url} ({size_kb:.1f} KB)"))
             try:
                 # Décompresser avec une limite de taille (100MB)
-                content = gzip.decompress(content)
-                messages.append(('info', f"✅ Décompression réussie"))
+                decompressed = gzip.decompress(content)
+                messages.append(('info', f"✅ Décompression réussie: {len(decompressed)} bytes décompressés"))
+                messages.append(('info', f"🔍 Premiers caractères décompressés: {decompressed[:200]}"))
+                content = decompressed
             except Exception as e:
                 messages.append(('error', f"❌ Échec de la décompression gzip: {str(e)}"))
                 return None, messages
+        else:
+            messages.append(('info', f"📄 Contenu non compressé détecté"))
         
         # Essayer différents encodages sur le contenu décompressé
         for encoding in ['utf-8', 'utf-8-sig', 'latin1', 'iso-8859-1']:
@@ -727,6 +735,10 @@ if messages:
 
 if xml_content:
     with st.spinner('Analyse en cours...'):
+        # Debug: afficher un aperçu du contenu
+        st.write("**🔍 Debug - Aperçu du contenu:**")
+        st.code(xml_content[:500], language='xml')
+        
         if is_sitemap_index(xml_content):
             st.success('🗂️ **Sitemap Index détecté** - Ce fichier est un index pointant vers plusieurs sitemaps')
             
