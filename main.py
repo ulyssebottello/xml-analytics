@@ -381,17 +381,46 @@ def fetch_xml(url):
         return None, [('error', f"Erreur lors de la récupération du XML: {str(e)}")]
 
 def is_sitemap_index(xml_content):
-    soup = BeautifulSoup(xml_content, 'xml')
-    return soup.find('sitemapindex') is not None
+    """Détecte si le XML est un sitemap index (gère les namespaces)"""
+    if not xml_content:
+        return False
+    
+    # Méthode 1: Recherche textuelle simple (la plus fiable)
+    if '<sitemapindex' in xml_content.lower():
+        return True
+    
+    # Méthode 2: Parse avec BeautifulSoup
+    try:
+        soup = BeautifulSoup(xml_content, 'xml')
+        # Chercher sitemapindex avec ou sans namespace
+        if soup.find('sitemapindex') is not None:
+            return True
+        if soup.find(lambda tag: tag.name and 'sitemapindex' in tag.name.lower()):
+            return True
+    except:
+        pass
+    
+    return False
 
 def parse_sitemap_index(xml_content):
+    """Parse un sitemap index (gère les namespaces)"""
     soup = BeautifulSoup(xml_content, 'xml')
-    sitemaps = soup.find_all('sitemap')
+    # Chercher les balises sitemap avec ou sans namespace
+    sitemaps = (soup.find_all('sitemap') or 
+                soup.find_all('ns:sitemap') or 
+                soup.find_all('default:sitemap') or
+                soup.find_all(lambda tag: tag.name and tag.name.lower() == 'sitemap'))
+    
     sitemap_data = []
     
     for sitemap in sitemaps:
-        loc = sitemap.find('loc')
-        last_mod = sitemap.find('lastmod')
+        # Chercher loc avec ou sans namespace
+        loc = (sitemap.find('loc') or 
+               sitemap.find('ns:loc') or 
+               sitemap.find('default:loc'))
+        last_mod = (sitemap.find('lastmod') or 
+                    sitemap.find('ns:lastmod') or 
+                    sitemap.find('default:lastmod'))
         
         if loc:
             sitemap_info = {
@@ -699,6 +728,11 @@ if messages:
 
 if xml_content:
     with st.spinner('Analyse en cours...'):
+        # Debug: afficher un aperçu du contenu XML
+        xml_preview = xml_content[:500].strip()
+        if 'sitemapindex' in xml_content.lower():
+            st.write("🔍 **Debug:** Balise 'sitemapindex' détectée dans le contenu")
+        
         if is_sitemap_index(xml_content):
             st.success('🗂️ **Sitemap Index détecté** - Ce fichier est un index pointant vers plusieurs sitemaps')
             
