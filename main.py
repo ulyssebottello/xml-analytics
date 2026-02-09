@@ -358,47 +358,60 @@ def fetch_xml(url):
         messages.append(('info', f"🔍 Premiers bytes: {content[:20]}"))
         messages.append(('info', f"🔍 Content-Encoding header: {content_encoding or 'Non défini'}"))
         
-        # Décompression selon le Content-Encoding ou les magic bytes
-        # 1) Brotli (Content-Encoding: br)
-        if content_encoding == 'br':
-            size_kb = len(content) / 1024
-            messages.append(('info', f"📦 Contenu Brotli détecté (Content-Encoding: br, {size_kb:.1f} KB)"))
-            if BROTLI_AVAILABLE:
+        # Vérifier si le contenu est déjà du texte/XML (décompression automatique par requests/proxy)
+        # Patterns XML : <?xml, <urlset, <sitemapindex, <rss, etc.
+        is_already_text = (
+            content.startswith(b'<?xml') or 
+            content.startswith(b'<urlset') or 
+            content.startswith(b'<sitemapindex') or
+            content.startswith(b'<rss') or
+            content.startswith(b'\xef\xbb\xbf<?xml')  # BOM UTF-8 + XML
+        )
+        
+        if is_already_text:
+            messages.append(('info', f"✅ Contenu XML détecté (déjà décompressé par requests/proxy)"))
+        else:
+            # Décompression selon le Content-Encoding ou les magic bytes
+            # 1) Brotli (Content-Encoding: br)
+            if content_encoding == 'br':
+                size_kb = len(content) / 1024
+                messages.append(('info', f"📦 Contenu Brotli détecté (Content-Encoding: br, {size_kb:.1f} KB)"))
+                if BROTLI_AVAILABLE:
+                    try:
+                        decompressed = brotli.decompress(content)
+                        messages.append(('info', f"✅ Décompression Brotli réussie: {len(decompressed)} bytes"))
+                        content = decompressed
+                    except Exception as e:
+                        messages.append(('warning', f"⚠️ Tentative de décompression Brotli échouée: {str(e)} - Le contenu est peut-être déjà décompressé"))
+                        # On continue quand même, le contenu pourrait être déjà décompressé
+                else:
+                    messages.append(('error', "❌ Contenu Brotli reçu mais le module 'brotli' n'est pas installé. Installez-le avec: pip install brotli"))
+                    return None, messages
+            # 2) Gzip (magic bytes \x1f\x8b ou Content-Encoding: gzip)
+            elif content.startswith(b'\x1f\x8b') or content_encoding == 'gzip':
+                size_kb = len(content) / 1024
+                messages.append(('info', f"📦 Fichier GZ détecté: {url} ({size_kb:.1f} KB)"))
                 try:
-                    decompressed = brotli.decompress(content)
-                    messages.append(('info', f"✅ Décompression Brotli réussie: {len(decompressed)} bytes"))
+                    decompressed = gzip.decompress(content)
+                    messages.append(('info', f"✅ Décompression gzip réussie: {len(decompressed)} bytes"))
                     content = decompressed
                 except Exception as e:
-                    messages.append(('error', f"❌ Échec de la décompression Brotli: {str(e)}"))
+                    messages.append(('error', f"❌ Échec de la décompression gzip: {str(e)}"))
+                    return None, messages
+            # 3) Deflate (Content-Encoding: deflate)
+            elif content_encoding == 'deflate':
+                import zlib
+                size_kb = len(content) / 1024
+                messages.append(('info', f"📦 Contenu Deflate détecté ({size_kb:.1f} KB)"))
+                try:
+                    decompressed = zlib.decompress(content, -zlib.MAX_WBITS)
+                    messages.append(('info', f"✅ Décompression Deflate réussie: {len(decompressed)} bytes"))
+                    content = decompressed
+                except Exception as e:
+                    messages.append(('error', f"❌ Échec de la décompression Deflate: {str(e)}"))
                     return None, messages
             else:
-                messages.append(('error', "❌ Contenu Brotli reçu mais le module 'brotli' n'est pas installé. Installez-le avec: pip install brotli"))
-                return None, messages
-        # 2) Gzip (magic bytes \x1f\x8b ou Content-Encoding: gzip)
-        elif content.startswith(b'\x1f\x8b') or content_encoding == 'gzip':
-            size_kb = len(content) / 1024
-            messages.append(('info', f"📦 Fichier GZ détecté: {url} ({size_kb:.1f} KB)"))
-            try:
-                decompressed = gzip.decompress(content)
-                messages.append(('info', f"✅ Décompression gzip réussie: {len(decompressed)} bytes"))
-                content = decompressed
-            except Exception as e:
-                messages.append(('error', f"❌ Échec de la décompression gzip: {str(e)}"))
-                return None, messages
-        # 3) Deflate (Content-Encoding: deflate)
-        elif content_encoding == 'deflate':
-            import zlib
-            size_kb = len(content) / 1024
-            messages.append(('info', f"📦 Contenu Deflate détecté ({size_kb:.1f} KB)"))
-            try:
-                decompressed = zlib.decompress(content, -zlib.MAX_WBITS)
-                messages.append(('info', f"✅ Décompression Deflate réussie: {len(decompressed)} bytes"))
-                content = decompressed
-            except Exception as e:
-                messages.append(('error', f"❌ Échec de la décompression Deflate: {str(e)}"))
-                return None, messages
-        else:
-            messages.append(('info', f"📄 Contenu non compressé détecté"))
+                messages.append(('info', f"📄 Contenu non compressé détecté"))
         
         # Essayer différents encodages sur le contenu décompressé
         for encoding in ['utf-8', 'utf-8-sig', 'latin1', 'iso-8859-1']:
